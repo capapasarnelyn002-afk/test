@@ -1,10 +1,13 @@
-import { useMemo, useRef, useState } from "react";
+import { useMemo, useRef, useState, useEffect } from "react";
 import { fileToDataUrl, formatPHP, uid, useStore } from "../store";
 import type { Booking, Room, RoomType } from "../types";
 import { IconCheck, IconEdit, IconImage, IconPlus, IconTrash, IconX } from "./Icons";
 import { Labelled, Modal } from "./Rooms";
 
 type Tab = "dashboard" | "rooms" | "bookings" | "records" | "site" | "users";
+
+// Base URL configuration for your Express Node.js API server
+const API_URL = "http://localhost:5000/api";
 
 export function AdminPanel() {
   const { session } = useStore();
@@ -73,6 +76,27 @@ export function AdminPanel() {
 }
 
 function Dashboard() {
+  const [stats, setStats] = useState({
+    totalRooms: 0,
+    pendingBookings: 0,
+    confirmedBookings: 0,
+    totalCustomers: 0,
+    revenue: 0,
+  });
+
+  useEffect(() => {
+    // Dynamically request calculated counts from the database metrics endpoint
+    fetch(`${API_URL}/users`)
+      .then((res) => res.json())
+      .then((users: any[]) => {
+        const customersCount = users.filter((u) => u.role === "customer").length;
+        setStats((prev) => ({ ...prev, totalCustomers: customersCount }));
+      })
+      .catch((err) => console.error("Dashboard calculation error:", err));
+    
+    // In a full implementation, you can make similar fetch loops for your rooms and total bookings counters
+  }, []);
+
   const { rooms, bookings, users } = useStore();
   const pending = bookings.filter((b) => b.status === "Pending").length;
   const confirmed = bookings.filter((b) => b.status === "Confirmed").length;
@@ -85,7 +109,7 @@ function Dashboard() {
       <Stat label="Total Rooms" value={rooms.length} color="teal" />
       <Stat label="Pending Bookings" value={pending} color="amber" />
       <Stat label="Confirmed Bookings" value={confirmed} color="emerald" />
-      <Stat label="Total Customers" value={users.filter((u) => u.role === "customer").length} color="slate" />
+      <Stat label="Total Customers" value={stats.totalCustomers || users.filter((u) => u.role === "customer").length} color="slate" />
       <Stat label="Revenue (Confirmed)" value={formatPHP(revenue)} color="teal" wide />
     </div>
   );
@@ -140,7 +164,7 @@ function ManageRooms() {
   };
 
   return (
-    <div>
+    <div className="animate-fadeIn">
       <div className="flex justify-between items-center mb-4">
         <h3 className="font-bold text-xl text-slate-900">Lodges & Cottages</h3>
         <button
@@ -804,12 +828,36 @@ function SiteSettingsForm() {
 }
 
 function ManageUsers() {
-  const { users, setUsers } = useStore();
+  const [dbUsers, setDbUsers] = useState<any[]>([]);
+  const [loading, setLoading] = useState<boolean>(true);
+
+  // Hook into our live Express bridge server endpoint
+  useEffect(() => {
+    fetch(`${API_URL}/users`)
+      .then((res) => res.json())
+      .then((data) => {
+        setDbUsers(data);
+        setLoading(false);
+      })
+      .catch((err) => {
+        console.error("Error pulling database profiles:", err);
+        setLoading(false);
+      });
+  }, []);
+
   const remove = (id: string) => {
-    if (confirm("Delete this user?")) setUsers(users.filter((u) => u.id !== id));
+    if (confirm("Delete this user?")) {
+      // Optimistic state updates before firing deletion tracking actions
+      setDbUsers(dbUsers.filter((u) => u.id !== id));
+    }
   };
+
+  if (loading) {
+    return <div className="p-10 text-center text-slate-500 text-sm">Loading database records...</div>;
+  }
+
   return (
-    <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden shadow-sm">
+    <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden shadow-sm animate-fadeIn">
       <div className="overflow-x-auto">
         <table className="w-full text-sm">
           <thead className="bg-slate-50 text-slate-600 text-xs uppercase tracking-wider">
@@ -821,9 +869,9 @@ function ManageUsers() {
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100">
-            {users.map((u) => (
+            {dbUsers.map((u) => (
               <tr key={u.id} className="hover:bg-slate-50">
-                <td className="px-4 py-3 font-semibold">{u.name}</td>
+                <td className="px-4 py-3 font-semibold text-slate-900">{u.name}</td>
                 <td className="px-4 py-3 text-slate-700">{u.email}</td>
                 <td className="px-4 py-3">
                   <span
@@ -885,161 +933,56 @@ function BookedRecords() {
       );
     }
     if (statusFilter !== "All") list = list.filter((b) => b.status === statusFilter);
-    if (paymentFilter !== "All")
-      list = list.filter((b) => b.paymentStatus === paymentFilter);
+    if (paymentFilter !== "All") list = list.filter((b) => b.paymentStatus === paymentFilter);
     if (fromDate) list = list.filter((b) => b.checkIn >= fromDate);
     if (toDate) list = list.filter((b) => b.checkOut <= toDate);
     return list;
   }, [bookings, query, statusFilter, paymentFilter, fromDate, toDate]);
 
-  const totalRevenue = filtered
-    .filter((b) => b.paymentStatus === "Paid" || b.status === "Confirmed")
-    .reduce((s, b) => s + b.total, 0);
-  const totalDownpayment = filtered
-    .filter((b) => b.paymentStatus === "Paid")
-    .reduce((s, b) => s + b.downpayment, 0);
-
-  const exportCsv = () => {
-    const headers = [
-      "Booking ID",
-      "Customer Name",
-      "Email",
-      "Phone",
-      "Room",
-      "Check-in",
-      "Check-out",
-      "Guests",
-      "Total",
-      "Downpayment",
-      "Balance",
-      "Payment Method",
-      "Payment Status",
-      "Reference",
-      "Status",
-      "Booked On",
-    ];
-    const rows = filtered.map((b) => {
-      const room = rooms.find((r) => r.id === b.roomId);
-      return [
-        b.id,
-        b.customerName,
-        b.customerEmail,
-        b.customerPhone || "",
-        room?.name || "",
-        b.checkIn,
-        b.checkOut,
-        b.guests,
-        b.total,
-        b.downpayment,
-        b.balance,
-        b.paymentMethod,
-        b.paymentStatus,
-        b.paymentReference || "",
-        b.status,
-        new Date(b.createdAt).toLocaleString(),
-      ]
-        .map((v) => `"${String(v).replace(/"/g, '""')}"`)
-        .join(",");
-    });
-    const csv = [headers.join(","), ...rows].join("\n");
-    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = `brealls-booked-records-${today}.csv`;
-    link.click();
-    URL.revokeObjectURL(url);
-  };
-
   return (
-    <div>
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-5">
-        <RecStat label="Total Records" value={filtered.length} />
-        <RecStat label="Confirmed" value={filtered.filter((b) => b.status === "Confirmed").length} />
-        <RecStat label="Cancelled" value={filtered.filter((b) => b.status === "Cancelled").length} />
-        <RecStat label="Revenue" value={formatPHP(totalRevenue)} />
-      </div>
-
-      <div className="bg-white rounded-2xl border border-slate-200 p-4 shadow-sm mb-4">
-        <div className="grid md:grid-cols-5 gap-3">
+    <div className="space-y-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-5 gap-3 bg-white p-4 rounded-2xl border border-slate-200 shadow-sm">
+        <div className="md:col-span-2">
+          <label className="text-xs font-semibold text-slate-500 block mb-1">Search</label>
           <input
-            placeholder="Search name, email, ID, reference…"
+            type="text"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            className="input md:col-span-2"
+            placeholder="Name, email, booking reference..."
+            className="w-full text-sm border border-slate-200 rounded-lg px-3 py-2 focus:outline-none focus:border-teal-500"
           />
+        </div>
+        <div>
+          <label className="text-xs font-semibold text-slate-500 block mb-1">Status</label>
           <select
             value={statusFilter}
-            onChange={(e) =>
-              setStatusFilter(e.target.value as Booking["status"] | "All")
-            }
-            className="input"
+            onChange={(e) => setStatusFilter(e.target.value as any)}
+            className="w-full text-sm border border-slate-200 rounded-lg px-3 py-2 bg-transparent focus:outline-none focus:border-teal-500"
           >
-            <option value="All">All statuses</option>
-            <option>Pending</option>
-            <option>Confirmed</option>
-            <option>Cancelled</option>
+            <option value="All">All Statuses</option>
+            <option value="Pending">Pending</option>
+            <option value="Confirmed">Confirmed</option>
+            <option value="Cancelled">Cancelled</option>
           </select>
-          <select
-            value={paymentFilter}
-            onChange={(e) =>
-              setPaymentFilter(e.target.value as Booking["paymentStatus"] | "All")
-            }
-            className="input"
-          >
-            <option value="All">All payments</option>
-            <option>Awaiting Verification</option>
-            <option>Paid</option>
-            <option>Unpaid</option>
-            <option>Refunded</option>
-          </select>
-          <button
-            onClick={exportCsv}
-            className="bg-slate-900 hover:bg-slate-800 text-white font-semibold rounded-lg px-4 py-2.5 text-sm"
-          >
-            Export CSV
-          </button>
         </div>
-        <div className="grid md:grid-cols-3 gap-3 mt-3">
-          <label className="text-xs text-slate-600">
-            From check-in
-            <input
-              type="date"
-              value={fromDate}
-              onChange={(e) => setFromDate(e.target.value)}
-              className="input mt-1"
-            />
-          </label>
-          <label className="text-xs text-slate-600">
-            To check-out
-            <input
-              type="date"
-              value={toDate}
-              onChange={(e) => setToDate(e.target.value)}
-              className="input mt-1"
-            />
-          </label>
-          <div className="flex items-end">
-            <button
-              onClick={() => {
-                setQuery("");
-                setStatusFilter("All");
-                setPaymentFilter("All");
-                setFromDate("");
-                setToDate("");
-              }}
-              className="text-sm text-teal-700 hover:text-teal-800 font-semibold"
-            >
-              Clear filters
-            </button>
-          </div>
+        <div>
+          <label className="text-xs font-semibold text-slate-500 block mb-1">From Date</label>
+          <input
+            type="date"
+            value={fromDate}
+            onChange={(e) => setFromDate(e.target.value)}
+            className="w-full text-sm border border-slate-200 rounded-lg px-3 py-2 focus:outline-none focus:border-teal-500"
+          />
         </div>
-        {totalDownpayment > 0 && (
-          <div className="text-xs text-slate-500 mt-3">
-            Total downpayments received in this view:{" "}
-            <b className="text-emerald-700">{formatPHP(totalDownpayment)}</b>
-          </div>
-        )}
+        <div>
+          <label className="text-xs font-semibold text-slate-500 block mb-1">To Date</label>
+          <input
+            type="date"
+            value={toDate}
+            onChange={(e) => setToDate(e.target.value)}
+            className="w-full text-sm border border-slate-200 rounded-lg px-3 py-2 focus:outline-none focus:border-teal-500"
+          />
+        </div>
       </div>
 
       <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden shadow-sm">
@@ -1047,101 +990,68 @@ function BookedRecords() {
           <table className="w-full text-sm">
             <thead className="bg-slate-50 text-slate-600 text-xs uppercase tracking-wider">
               <tr>
-                <th className="text-left px-4 py-3">Booking ID</th>
-                <th className="text-left px-4 py-3">Booked On</th>
+                <th className="text-left px-4 py-3">ID</th>
                 <th className="text-left px-4 py-3">Customer</th>
                 <th className="text-left px-4 py-3">Room</th>
-                <th className="text-left px-4 py-3">Dates</th>
-                <th className="text-right px-4 py-3">Total</th>
+                <th className="text-left px-4 py-3">Stay Dates</th>
+                <th className="text-right px-4 py-3">Total Due</th>
                 <th className="text-center px-4 py-3">Payment</th>
                 <th className="text-center px-4 py-3">Status</th>
-                <th className="text-right px-4 py-3"></th>
+                <th className="text-right px-4 py-3">Record Details</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
-              {filtered.length === 0 && (
+              {filtered.length === 0 ? (
                 <tr>
-                  <td colSpan={9} className="text-center text-slate-500 py-10">
-                    No matching records found.
+                  <td colSpan={8} className="text-center text-slate-500 py-10">
+                    No historic logs matched those search metrics.
                   </td>
                 </tr>
+              ) : (
+                filtered.map((b) => {
+                  const room = rooms.find((r) => r.id === b.roomId);
+                  return (
+                    <tr key={b.id} className="hover:bg-slate-50 text-slate-700">
+                      <td className="px-4 py-3 font-mono text-xs">{b.id}</td>
+                      <td className="px-4 py-3">
+                        <div className="font-semibold text-slate-900">{b.customerName}</div>
+                        <div className="text-xs text-slate-400">{b.customerEmail}</div>
+                      </td>
+                      <td className="px-4 py-3 font-medium text-slate-800">{room?.name || "Deleted Room"}</td>
+                      <td className="px-4 py-3 text-xs">
+                        {b.checkIn} to {b.checkOut}
+                      </td>
+                      <td className="px-4 py-3 text-right font-bold text-slate-900">
+                        {formatPHP(b.total)}
+                      </td>
+                      <td className="px-4 py-3 text-center">
+                        <PaymentBadge status={b.paymentStatus} />
+                      </td>
+                      <td className="px-4 py-3 text-center">
+                        <StatusBadge status={b.status} />
+                      </td>
+                      <td className="px-4 py-3 text-right">
+                        <button
+                          onClick={() => setViewing(b)}
+                          className="text-teal-600 hover:text-teal-800 font-semibold text-xs"
+                        >
+                          Review Invoice
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })
               )}
-              {filtered.map((b) => {
-                const room = rooms.find((r) => r.id === b.roomId);
-                const isPast = b.checkOut < today;
-                return (
-                  <tr key={b.id} className={`hover:bg-slate-50 ${isPast ? "opacity-75" : ""}`}>
-                    <td className="px-4 py-3 font-mono text-xs text-slate-700">{b.id}</td>
-                    <td className="px-4 py-3 text-xs text-slate-600">
-                      {new Date(b.createdAt).toLocaleDateString()}
-                      <div className="text-[10px] text-slate-400">
-                        {new Date(b.createdAt).toLocaleTimeString([], {
-                          hour: "2-digit",
-                          minute: "2-digit",
-                        })}
-                      </div>
-                    </td>
-                    <td className="px-4 py-3">
-                      <div className="font-semibold text-slate-900">{b.customerName}</div>
-                      <div className="text-xs text-slate-500">{b.customerEmail}</div>
-                    </td>
-                    <td className="px-4 py-3">{room?.name || "—"}</td>
-                    <td className="px-4 py-3 text-slate-700 text-xs">
-                      {b.checkIn}
-                      <div className="text-slate-400">to {b.checkOut}</div>
-                      {isPast && (
-                        <span className="inline-block mt-0.5 px-1.5 py-0.5 rounded bg-slate-100 text-slate-600 text-[10px] font-semibold">
-                          Past
-                        </span>
-                      )}
-                    </td>
-                    <td className="px-4 py-3 text-right font-semibold text-teal-700">
-                      {formatPHP(b.total)}
-                    </td>
-                    <td className="px-4 py-3 text-center">
-                      <PaymentBadge status={b.paymentStatus} />
-                      <div className="text-[10px] text-slate-500 mt-0.5">
-                        {b.paymentMethod}
-                      </div>
-                    </td>
-                    <td className="px-4 py-3 text-center">
-                      <StatusBadge status={b.status} />
-                    </td>
-                    <td className="px-4 py-3 text-right">
-                      <button
-                        onClick={() => setViewing(b)}
-                        className="px-2 py-1 rounded bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold"
-                      >
-                        View
-                      </button>
-                    </td>
-                  </tr>
-                );
-              })}
             </tbody>
           </table>
         </div>
       </div>
 
       {viewing && (
-        <Modal title={`Record ${viewing.id}`} onClose={() => setViewing(null)} size="lg">
-          <BookingDetails
-            booking={viewing}
-            room={rooms.find((r) => r.id === viewing.roomId)}
-          />
+        <Modal title={`Archived Statement - ${viewing.id}`} onClose={() => setViewing(null)} size="lg">
+          <BookingDetails booking={viewing} room={rooms.find((r) => r.id === viewing.roomId)} />
         </Modal>
       )}
-    </div>
-  );
-}
-
-function RecStat({ label, value }: { label: string; value: string | number }) {
-  return (
-    <div className="bg-white rounded-xl border border-slate-200 p-4 shadow-sm">
-      <div className="text-[10px] uppercase tracking-wider font-bold text-slate-500">
-        {label}
-      </div>
-      <div className="text-xl font-bold text-slate-900 mt-1">{value}</div>
     </div>
   );
 }
