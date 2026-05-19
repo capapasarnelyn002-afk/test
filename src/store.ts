@@ -1,17 +1,16 @@
 import { useEffect, useState, useCallback } from "react";
 import type { Booking, Room, SiteSettings, User } from "./types";
 
-// Base URL for your backend API server (leave blank if using Next.js internal API routes)
-const API_BASE = "/api"; 
+// Base URL configuration for your API backend
+const API_BASE = "http://localhost:5000/api"; 
 
-// Simple cross-component subscription to trigger manual cache refreshes
+// Simple cross-component subscription to trigger state updates
 const listeners = new Set<() => void>();
 function notify() {
   listeners.forEach((l) => l());
 }
 
 export function useStore() {
-  // Global states synced with the API
   const [users, setUsersState] = useState<User[]>([]);
   const [rooms, setRoomsState] = useState<Room[]>([]);
   const [bookings, setBookingsState] = useState<Booking[]>([]);
@@ -19,34 +18,80 @@ export function useStore() {
   const [session, setSessionState] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
 
-  // Synchronize component rerenders
+  // Synchronize cross-component state updates
   useEffect(() => {
     const l = () => fetchData();
     listeners.add(l);
     return () => { listeners.delete(l); };
   }, []);
 
-  // Fetch all core data from Aiven via our API
   const fetchData = async () => {
     try {
       const [uRes, rRes, bRes, sRes] = await Promise.all([
-        fetch(`${API_BASE}/users`),
-        fetch(`${API_BASE}/rooms`),
-        fetch(`${API_BASE}/bookings`),
-        fetch(`${API_BASE}/settings`),
+        fetch(`${API_BASE}/users`).then(r => r.ok ? r.json() : []),
+        fetch(`${API_BASE}/rooms`).then(r => r.ok ? r.json() : []),
+        fetch(`${API_BASE}/bookings`).then(r => r.ok ? r.json() : []),
+        fetch(`${API_BASE}/settings`).then(r => r.ok ? r.json() : null),
       ]);
 
-      if (uRes.ok) setUsersState(await uRes.json());
-      if (rRes.ok) setRoomsState(await rRes.json());
-      if (bRes.ok) setBookingsState(await bRes.json());
-      if (sRes.ok) setSettingsState(await sRes.json());
+      // Normalize MySQL snake_case database schema maps safely back to Frontend camelCase
+      const mappedRooms = rRes.map((r: any) => ({
+        id: r.id,
+        name: r.name,
+        type: r.type,
+        capacity: Number(r.capacity),
+        price: Number(r.price),
+        description: r.description,
+        image: r.image_url || r.image,
+        available: Boolean(r.available)
+      }));
+
+      const mappedSettings: SiteSettings | null = sRes ? {
+        heroImage: sRes.hero_image || sRes.heroImage || "",
+        heroTitle: sRes.hero_title || sRes.heroTitle || "",
+        heroSubtitle: sRes.hero_subtitle || sRes.heroSubtitle || "",
+        contactPhone: sRes.contact_phone || sRes.contactPhone || "",
+        contactEmail: sRes.contact_email || sRes.contactEmail || "",
+        contactLocation: sRes.contact_location || sRes.contactLocation || "",
+        downpaymentPercent: Number(sRes.downpayment_percent || sRes.downpaymentPercent || 50),
+        gcashNumber: sRes.gcash_number || sRes.gcashNumber || "",
+        gcashName: sRes.gcash_name || sRes.gcashName || "",
+        bankName: sRes.bank_name || sRes.bankName || "",
+        bankAccountNumber: sRes.bank_account_number || sRes.bankAccountNumber || "",
+        bankAccountName: sRes.bank_account_name || sRes.bankAccountName || "",
+      } : null;
+
+      const mappedBookings = bRes.map((b: any) => ({
+        id: String(b.id),
+        roomId: b.room_id || b.roomId,
+        customerId: b.customer_id || b.customerId,
+        customerName: b.customer_name || b.customerName,
+        customerEmail: b.customer_email || b.customerEmail,
+        customerPhone: b.customer_phone || b.customerPhone,
+        checkIn: b.check_in || b.checkIn,
+        checkOut: b.check_out || b.checkOut,
+        guests: Number(b.guests),
+        roomsQty: Number(b.rooms_qty || b.roomsQty || 1),
+        total: Number(b.total),
+        downpayment: Number(b.downpayment),
+        balance: Number(b.balance),
+        paymentMethod: b.payment_method || b.paymentMethod,
+        paymentStatus: b.payment_status || b.paymentStatus,
+        paymentReference: b.payment_reference || b.paymentReference,
+        paymentProof: b.payment_proof || b.paymentProof,
+        status: b.status
+      }));
+
+      setUsersState(uRes);
+      setRoomsState(mappedRooms);
+      setBookingsState(mappedBookings);
+      setSettingsState(mappedSettings);
       
-      // Keep session local or look up HTTP-only session cookie
       const savedSession = localStorage.getItem("brealls_session");
       if (savedSession) setSessionState(JSON.parse(savedSession));
 
     } catch (error) {
-      console.error("Failed to load backend Aiven data:", error);
+      console.error("❌ API Fetch Error inside useStore:", error);
     } finally {
       setLoading(false);
     }
@@ -56,41 +101,48 @@ export function useStore() {
     fetchData();
   }, []);
 
-  // API Setters
   const setUsers = useCallback(async (u: User[]) => {
-    await fetch(`${API_BASE}/users`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ users: u }),
-    });
-    notify();
+    try {
+      await fetch(`${API_BASE}/users`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ users: u }),
+      });
+      notify();
+    } catch (e) { console.error(e); }
   }, []);
 
   const setRooms = useCallback(async (r: Room[]) => {
-    await fetch(`${API_BASE}/rooms`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ rooms: r }),
-    });
-    notify();
+    try {
+      await fetch(`${API_BASE}/rooms`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ rooms: r }),
+      });
+      notify();
+    } catch (e) { console.error(e); }
   }, []);
 
   const setBookings = useCallback(async (b: Booking[]) => {
-    await fetch(`${API_BASE}/bookings`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ bookings: b }),
-    });
-    notify();
+    try {
+      await fetch(`${API_BASE}/bookings`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ bookings: b }),
+      });
+      notify();
+    } catch (e) { console.error(e); }
   }, []);
 
   const setSettings = useCallback(async (s: SiteSettings) => {
-    await fetch(`${API_BASE}/settings`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(s),
-    });
-    notify();
+    try {
+      await fetch(`${API_BASE}/settings`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(s),
+      });
+      notify();
+    } catch (e) { console.error(e); }
   }, []);
 
   const setSession = useCallback((u: User | null) => {
@@ -110,7 +162,7 @@ export function useStore() {
     bookings,
     settings,
     session,
-    loading,
+    loading, 
     setUsers,
     setRooms,
     setBookings,
@@ -120,7 +172,8 @@ export function useStore() {
   };
 }
 
-// Utility features preserved 
+// --- UTILITY LOGIC (Preserved perfectly from original file) ---
+
 export function fileToDataUrl(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -142,11 +195,12 @@ export function nightsBetween(checkIn: string, checkOut: string): number {
 }
 
 export function formatPHP(n: number) {
-  return "₱" + n.toLocaleString("en-PH");
+  return "₱" + (n || 0).toLocaleString("en-PH");
 }
 
 export function roomBlockingBookings(bookings: Booking[], roomId: string) {
-  return bookings.filter((b) => b.roomId === roomId && b.status !== "Cancelled");
+  if (!Array.isArray(bookings)) return [];
+  return bookings.filter((b) => b && b.roomId === roomId && b.status !== "Cancelled");
 }
 
 export function rangesOverlap(aStart: string, aEnd: string, bStart: string, bEnd: string) {
