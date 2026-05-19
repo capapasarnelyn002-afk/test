@@ -17,6 +17,6 @@ export default defineConfig({
     },
   },
   preview: {
-    allowedHosts: 'all'
+    allowedHosts: ["booking-qijp.onrender.com"]
   }
 });
